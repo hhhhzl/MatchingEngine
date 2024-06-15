@@ -1,2 +1,2 @@
 *.rust linguist-detectable=true
-*.python linguist-detectable=false
+*.py linguist-detectable=false

@@ -28,8 +28,6 @@ third_party/MatchingEngine/
 ├── bindings/
 │   ├── go/                     # Go bindings (cgo + msgpack decode)
 │   └── python/                 # Python bindings (ctypes + msgpack decode)
-├── go/                         # (legacy / placeholder)
-└── python/                     # (legacy / placeholder)
 ```
 
 ## Features (high level)

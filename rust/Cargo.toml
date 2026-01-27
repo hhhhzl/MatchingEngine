@@ -1,9 +1,25 @@
 [package]
-name = "rust"
+name = "matching-engine"
 version = "0.1.0"
 edition = "2021"
+description = "High-performance order matching engine with price-time priority"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/marginforest/MatchingEngine"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "matching_engine"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
 priority-queue = "2.2"
+rust_decimal = "1.33"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+uuid = { version = "1.6", features = ["v4"] }
+rmp-serde = "1.3"
+serde_bytes = "0.11"
+
+[dev-dependencies]
+criterion = "0.5"
+proptest = "1.4"

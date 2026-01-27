@@ -1,2 +1,42 @@
-.idea
 .DS_Store
+.idea/
+
+## Rust
+rust/target/
+**/target/
+**/*.rlib
+**/*.rmeta
+**/*.dSYM/
+
+## C / shared libraries (built artifacts)
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.a
+**/*.lib
+
+## Go
+**/*.exe
+**/*.test
+**/*.out
+**/*.prof
+**/bin/
+
+## Python
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+**/.venv/
+**/venv/
+**/ENV/
+**/env/
+**/build/
+**/dist/
+**/*.egg-info/
+
+## OS / editor
+.vscode/

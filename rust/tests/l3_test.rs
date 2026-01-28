@@ -18,8 +18,9 @@ fn test_l3_queue_position_tracking() {
     let mut book = OrderBookL3::new("AAPL".to_string());
     
     // Create orders with different prices and timestamps
-    let mut order1 = Order::new(
+    let mut order1 = Order::new_with_account(
         "client_1".to_string(),
+        "acct".to_string(),
         "AAPL".to_string(),
         Side::Buy,
         OrderType::Limit,
@@ -30,8 +31,9 @@ fn test_l3_queue_position_tracking() {
     );
     order1.order_id = "order_1".to_string();
     
-    let mut order2 = Order::new(
+    let mut order2 = Order::new_with_account(
         "client_2".to_string(),
+        "acct".to_string(),
         "AAPL".to_string(),
         Side::Buy,
         OrderType::Limit,
@@ -42,8 +44,9 @@ fn test_l3_queue_position_tracking() {
     );
     order2.order_id = "order_2".to_string();
     
-    let mut order3 = Order::new(
+    let mut order3 = Order::new_with_account(
         "client_3".to_string(),
+        "acct".to_string(),
         "AAPL".to_string(),
         Side::Buy,
         OrderType::Limit,
@@ -79,8 +82,9 @@ fn test_l3_price_time_priority() {
     
     // Add multiple buy orders at same price, different times
     for i in 0..5 {
-        let mut order = Order::new(
+        let mut order = Order::new_with_account(
             format!("client_{}", i),
+            "acct".to_string(),
             "AAPL".to_string(),
             Side::Buy,
             OrderType::Limit,
@@ -107,8 +111,9 @@ fn test_l3_price_time_priority() {
 fn test_l3_hidden_order() {
     let mut book = OrderBookL3::new("AAPL".to_string());
     
-    let order = Order::new(
+    let order = Order::new_with_account(
         "client_1".to_string(),
+        "acct".to_string(),
         "AAPL".to_string(),
         Side::Buy,
         OrderType::Limit,

@@ -296,8 +296,9 @@ mod tests {
         
         engine.add_global_rule(rule);
         
-        let order = Order::new(
+        let order = Order::new_with_account(
             "client_1".to_string(),
+            "acct".to_string(),
             "AAPL".to_string(),
             Side::Buy,
             OrderType::Limit,

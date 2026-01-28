@@ -1278,8 +1278,9 @@ mod tests {
     #[test]
     fn test_add_order() {
         let mut book = OrderBook::new("AAPL".to_string());
-        let order = Order::new(
+        let order = Order::new_with_account(
             "client_1".to_string(),
+            "acct".to_string(),
             "AAPL".to_string(),
             Side::Buy,
             OrderType::Limit,
@@ -1296,8 +1297,9 @@ mod tests {
         let mut book = OrderBook::new("AAPL".to_string());
 
         // Add buy orders with different prices.
-        let order1 = Order::new(
+        let order1 = Order::new_with_account(
             "client_1".to_string(),
+            "acct".to_string(),
             "AAPL".to_string(),
             Side::Buy,
             OrderType::Limit,
@@ -1306,8 +1308,9 @@ mod tests {
             TimeInForce::GTC,
             1000,
         );
-        let order2 = Order::new(
+        let order2 = Order::new_with_account(
             "client_2".to_string(),
+            "acct".to_string(),
             "AAPL".to_string(),
             Side::Buy,
             OrderType::Limit,
@@ -1329,8 +1332,9 @@ mod tests {
         let mut book = OrderBook::new("AAPL".to_string());
 
         // Rest sell at 100.00
-        let sell_order = Order::new(
+        let sell_order = Order::new_with_account(
             "client_sell".to_string(),
+            "acct_s".to_string(),
             "AAPL".to_string(),
             Side::Sell,
             OrderType::Limit,
@@ -1342,8 +1346,9 @@ mod tests {
         book.add_order(sell_order).unwrap();
 
         // Incoming buy at 101.00
-        let buy_order = Order::new(
+        let buy_order = Order::new_with_account(
             "client_buy".to_string(),
+            "acct_b".to_string(),
             "AAPL".to_string(),
             Side::Buy,
             OrderType::Limit,
@@ -1363,8 +1368,9 @@ mod tests {
     fn test_fok_does_not_partially_consume_book() {
         let mut book = OrderBook::new("AAPL".to_string());
 
-        let sell_order = Order::new(
+        let sell_order = Order::new_with_account(
             "client_sell".to_string(),
+            "acct_s".to_string(),
             "AAPL".to_string(),
             Side::Sell,
             OrderType::Limit,
@@ -1375,8 +1381,9 @@ mod tests {
         );
         book.add_order(sell_order).unwrap();
 
-        let fok_buy = Order::new(
+        let fok_buy = Order::new_with_account(
             "client_fok".to_string(),
+            "acct_b".to_string(),
             "AAPL".to_string(),
             Side::Buy,
             OrderType::Limit,

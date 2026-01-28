@@ -21,8 +21,9 @@ fn valid_order(
     qty: i64,
     timestamp: i64,
 ) -> Order {
-    Order::new(
+    Order::new_with_account(
         client_id,
+        "acct".to_string(),
         symbol,
         side,
         OrderType::Limit,

@@ -60,9 +60,8 @@ impl MatchingEngineL3 {
     pub fn submit_order(&mut self, mut order: Order) -> Result<Vec<Trade>> {
         // Generate order_id if not provided
         if order.order_id.is_empty() {
-            use uuid::Uuid;
             self.order_id_counter += 1;
-            order.order_id = format!("ORDER_{}_{}", self.order_id_counter, Uuid::new_v4());
+            order.order_id = format!("ORDER_{}", self.order_id_counter);
         }
 
         // Get or create orderbook
@@ -92,7 +91,12 @@ impl MatchingEngineL3 {
     }
 
     /// Submit a post-only order
-    pub fn submit_post_only(&mut self, post_only: PostOnlyOrder) -> Result<Vec<Trade>> {
+    pub fn submit_post_only(&mut self, mut post_only: PostOnlyOrder) -> Result<Vec<Trade>> {
+        // Generate order_id deterministically if not provided.
+        if post_only.order.order_id.is_empty() {
+            self.order_id_counter += 1;
+            post_only.order.order_id = format!("ORDER_{}", self.order_id_counter);
+        }
         let order = post_only.order.clone();
         
         // Check rules
@@ -112,7 +116,12 @@ impl MatchingEngineL3 {
     }
 
     /// Submit a hidden order
-    pub fn submit_hidden(&mut self, hidden: HiddenOrder) -> Result<Vec<Trade>> {
+    pub fn submit_hidden(&mut self, mut hidden: HiddenOrder) -> Result<Vec<Trade>> {
+        // Generate order_id deterministically if not provided.
+        if hidden.order.order_id.is_empty() {
+            self.order_id_counter += 1;
+            hidden.order.order_id = format!("ORDER_{}", self.order_id_counter);
+        }
         let order = hidden.order.clone();
         
         // Check rules

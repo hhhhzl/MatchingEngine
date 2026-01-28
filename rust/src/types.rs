@@ -66,6 +66,8 @@ pub struct Order {
     pub order_id: String,
     /// Client-provided order identifier
     pub client_order_id: String,
+    /// Account identifier (risk buckets / per-account limits).
+    pub account_id: String,
     /// Trading symbol
     pub symbol: String,
     /// Order side (Buy or Sell)
@@ -104,6 +106,7 @@ impl Order {
         Self {
             order_id: String::new(),
             client_order_id,
+            account_id: String::new(),
             symbol,
             side,
             order_type,
@@ -115,6 +118,36 @@ impl Order {
             timestamp_ns,
             status: OrderStatus::New,
         }
+    }
+
+    /// Create a new order with an explicit account_id.
+    ///
+    /// This is the preferred constructor for simulation / broker integrations that
+    /// need per-account risk buckets and limits.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_account(
+        client_order_id: String,
+        account_id: String,
+        symbol: String,
+        side: Side,
+        order_type: OrderType,
+        price: Decimal,
+        qty: Decimal,
+        time_in_force: TimeInForce,
+        timestamp_ns: i64,
+    ) -> Self {
+        let mut o = Self::new(
+            client_order_id,
+            symbol,
+            side,
+            order_type,
+            price,
+            qty,
+            time_in_force,
+            timestamp_ns,
+        );
+        o.account_id = account_id;
+        o
     }
 }
 

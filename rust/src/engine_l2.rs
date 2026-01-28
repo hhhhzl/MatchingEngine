@@ -38,6 +38,7 @@ pub struct MatchingEngine {
 #[derive(Debug, Clone)]
 struct IcebergState {
     symbol: String,
+    account_id: String,
     side: crate::types::Side,
     price: Decimal,
     display_qty: Decimal,
@@ -203,7 +204,7 @@ impl MatchingEngine {
         let Some(iceberg_id) = self.iceberg_by_order.remove(filled_slice_order_id) else {
             return Ok(None);
         };
-        let (client_order_id, sym, side, price, tif, remaining_after, slice_qty) = {
+        let (client_order_id, account_id, sym, side, price, tif, remaining_after, slice_qty) = {
             let Some(state) = self.icebergs.get_mut(&iceberg_id) else {
                 return Ok(None);
             };
@@ -217,6 +218,7 @@ impl MatchingEngine {
             state.remaining_qty -= slice_qty;
             (
                 state.client_order_id.clone(),
+                state.account_id.clone(),
                 state.symbol.clone(),
                 state.side,
                 state.price,
@@ -229,8 +231,9 @@ impl MatchingEngine {
         // If we exhausted the iceberg after taking this slice, we'll clean up after submission.
         let slice_order_id = self.next_order_id();
 
-        let mut slice = Order::new(
+        let mut slice = Order::new_with_account(
             client_order_id.clone(),
+            account_id.clone(),
             sym.clone(),
             side,
             crate::types::OrderType::Limit,
@@ -535,6 +538,7 @@ impl MatchingEngine {
             iceberg_id.clone(),
             IcebergState {
                 symbol: order.symbol.clone(),
+                account_id: order.account_id.clone(),
                 side: order.side,
                 price: order.price,
                 display_qty,
@@ -544,8 +548,9 @@ impl MatchingEngine {
             },
         );
 
-        let mut first_slice = Order::new(
+        let mut first_slice = Order::new_with_account(
             order.client_order_id.clone(),
+            order.account_id.clone(),
             order.symbol.clone(),
             order.side,
             crate::types::OrderType::Limit,

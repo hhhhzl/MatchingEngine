@@ -8,7 +8,6 @@
 
 use std::collections::{HashMap, VecDeque};
 use rust_decimal::Decimal;
-use uuid::Uuid;
 
 use crate::types::{Order, Trade, Side, OrderComparable, OrderStatus, OrderType, TimeInForce};
 use crate::error::{Result, MatchingError};
@@ -16,6 +15,31 @@ use crate::order_types::{HiddenOrder, PostOnlyOrder};
 
 /// Visible order book representation: (bids, asks), each as `(price, qty)` levels.
 pub type VisibleOrderBook = (Vec<(Decimal, Decimal)>, Vec<(Decimal, Decimal)>);
+
+/// Final outcome for a resting order's queue journey.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuePositionOutcome {
+    Filled,
+    Canceled,
+    Replaced,
+}
+
+/// Queue position telemetry event.
+#[derive(Debug, Clone)]
+pub struct QueuePositionEvent {
+    pub order_id: String,
+    pub client_order_id: String,
+    pub symbol: String,
+    pub side: Side,
+    pub price: Decimal,
+    /// Queue position at the time the order was enqueued (0 = front).
+    pub enqueued_position: usize,
+    /// Queue position at the time the order left the book (0 = front).
+    pub exit_position: usize,
+    /// Event time spent resting on the book (ns).
+    pub wait_time_ns: i64,
+    pub outcome: QueuePositionOutcome,
+}
 
 /// Controls how an incoming order's remaining quantity (if any) is rested on the book.
 #[derive(Debug, Clone, Copy)]
@@ -59,6 +83,12 @@ pub struct OrderBookL3 {
     last_trade_price: Option<Decimal>,
     /// Trade counter
     trade_counter: u64,
+    /// Deterministic order id counter (used only when caller does not provide order_id).
+    order_id_counter: u64,
+    /// Resting order telemetry: order_id -> (enqueued_ts_ns, enqueued_position).
+    resting_info: HashMap<String, (i64, usize)>,
+    /// Buffered queue position events (drainable).
+    queue_events: Vec<QueuePositionEvent>,
 }
 
 impl OrderBookL3 {
@@ -71,7 +101,27 @@ impl OrderBookL3 {
             orders: HashMap::new(),
             last_trade_price: None,
             trade_counter: 0,
+            order_id_counter: 0,
+            resting_info: HashMap::new(),
+            queue_events: Vec::new(),
         }
+    }
+
+    fn next_order_id(&mut self) -> String {
+        self.order_id_counter += 1;
+        format!("ORDER_{}", self.order_id_counter)
+    }
+
+    fn next_trade_id(&mut self) -> String {
+        self.trade_counter += 1;
+        format!("TRADE_{}", self.trade_counter)
+    }
+
+    /// Drain accumulated queue position telemetry events.
+    pub fn drain_queue_position_events(&mut self) -> Vec<QueuePositionEvent> {
+        let mut out = Vec::new();
+        std::mem::swap(&mut out, &mut self.queue_events);
+        out
     }
 
     /// Add an order to the book with queue position tracking
@@ -80,7 +130,7 @@ impl OrderBookL3 {
     pub fn add_order(&mut self, mut order: Order) -> Result<usize> {
         // Generate order_id if not set
         if order.order_id.is_empty() {
-            order.order_id = format!("ORDER_{}", Uuid::new_v4());
+            order.order_id = self.next_order_id();
         }
 
         if self.orders.contains_key(&order.order_id) {
@@ -124,6 +174,9 @@ impl OrderBookL3 {
         // Store order
         self.orders.insert(order.order_id.clone(), entry.clone());
 
+        // Record enqueue telemetry (event-time).
+        self.resting_info.insert(order.order_id.clone(), (order.timestamp_ns, queue_position));
+
         // Return the final queue position (which is the insertion position)
         Ok(queue_position)
     }
@@ -134,7 +187,7 @@ impl OrderBookL3 {
         
         // Generate order_id if not set
         if order.order_id.is_empty() {
-            order.order_id = format!("ORDER_{}", Uuid::new_v4());
+            order.order_id = self.next_order_id();
         }
 
         // Find insertion position (hidden orders still follow price-time priority)
@@ -164,6 +217,9 @@ impl OrderBookL3 {
 
         // Store order
         self.orders.insert(order.order_id.clone(), entry.clone());
+
+        // Record enqueue telemetry (event-time).
+        self.resting_info.insert(order.order_id.clone(), (order.timestamp_ns, queue_position));
 
         Ok(queue_position)
     }
@@ -248,14 +304,20 @@ impl OrderBookL3 {
 
     /// Cancel an order
     pub fn cancel_order(&mut self, order_id: &str) -> Result<Order> {
-        // Clone necessary data before borrowing
-        let (side, queue_pos, mut canceled_order) = {
-            let entry = self.orders.get(order_id)
+        self.remove_resting_order(order_id, QueuePositionOutcome::Canceled)
+    }
+
+    fn remove_resting_order(&mut self, order_id: &str, outcome: QueuePositionOutcome) -> Result<Order> {
+        // Clone necessary data before borrowing.
+        let (side, queue_pos, mut removed_order) = {
+            let entry = self
+                .orders
+                .get(order_id)
                 .ok_or_else(|| MatchingError::OrderNotFound(order_id.to_string()))?;
             (entry.order.side, entry.queue_position, entry.order.clone())
         };
 
-        // Remove from queue
+        // Remove from queue.
         match side {
             Side::Buy => {
                 self.bids.remove(queue_pos);
@@ -265,15 +327,91 @@ impl OrderBookL3 {
             }
         }
 
-        // Update queue positions for remaining orders (start from removed position)
-        // After removal, elements shift, so we update from the removed position
+        // Update queue positions for remaining orders (start from removed position).
         self._update_queue_positions(side, queue_pos);
 
-        // Remove from map
-        canceled_order.status = OrderStatus::Canceled;
+        // Remove from map.
+        removed_order.status = match outcome {
+            QueuePositionOutcome::Filled => OrderStatus::Filled,
+            QueuePositionOutcome::Canceled => OrderStatus::Canceled,
+            QueuePositionOutcome::Replaced => OrderStatus::Canceled,
+        };
         self.orders.remove(order_id);
 
-        Ok(canceled_order)
+        // Emit queue position telemetry.
+        if let Some((enq_ts, enq_pos)) = self.resting_info.remove(order_id) {
+            let exit_pos = queue_pos;
+            let wait_time_ns = removed_order.timestamp_ns.saturating_sub(enq_ts);
+            self.queue_events.push(QueuePositionEvent {
+                order_id: removed_order.order_id.clone(),
+                client_order_id: removed_order.client_order_id.clone(),
+                symbol: removed_order.symbol.clone(),
+                side: removed_order.side,
+                price: removed_order.price,
+                enqueued_position: enq_pos,
+                exit_position: exit_pos,
+                wait_time_ns,
+                outcome,
+            });
+        }
+
+        Ok(removed_order)
+    }
+
+    /// Cancel/replace (amend) a resting order.
+    ///
+    /// Rule: replace loses time priority (treated as cancel + new at the new price).
+    pub fn replace_order(
+        &mut self,
+        order_id: &str,
+        new_price: Decimal,
+        new_qty: Decimal,
+        timestamp_ns: i64,
+    ) -> Result<usize> {
+        if new_qty <= Decimal::ZERO {
+            return Err(MatchingError::InvalidQuantity);
+        }
+        if new_price <= Decimal::ZERO {
+            return Err(MatchingError::InvalidPrice);
+        }
+
+        let existing = self
+            .orders
+            .get(order_id)
+            .ok_or_else(|| MatchingError::OrderNotFound(order_id.to_string()))?
+            .order
+            .clone();
+
+        // Remove the old resting order, marking the queue outcome as Replaced.
+        let mut canceled = self.remove_resting_order(order_id, QueuePositionOutcome::Replaced)?;
+
+        // Preserve identity fields; update economic fields.
+        canceled.price = new_price;
+        canceled.qty = new_qty;
+        canceled.timestamp_ns = timestamp_ns;
+
+        if new_qty < canceled.cum_qty {
+            return Err(MatchingError::InvalidOrder(
+                "replace new_qty cannot be less than cum_qty".to_string(),
+            ));
+        }
+        canceled.leaves_qty = new_qty - canceled.cum_qty;
+        canceled.status = if canceled.cum_qty > Decimal::ZERO {
+            OrderStatus::Partial
+        } else {
+            OrderStatus::Ack
+        };
+
+        // Important: keep the same order_id / client_order_id.
+        canceled.order_id = existing.order_id;
+        canceled.client_order_id = existing.client_order_id;
+        canceled.account_id = existing.account_id;
+        canceled.symbol = existing.symbol;
+        canceled.side = existing.side;
+        canceled.order_type = existing.order_type;
+        canceled.time_in_force = existing.time_in_force;
+
+        self.add_order(canceled)
     }
 
     /// Match an incoming order
@@ -295,7 +433,7 @@ impl OrderBookL3 {
 
         // Generate order_id if not set
         if incoming.order_id.is_empty() {
-            incoming.order_id = format!("ORDER_{}", Uuid::new_v4());
+            incoming.order_id = self.next_order_id();
         }
 
         match incoming.side {
@@ -333,10 +471,10 @@ impl OrderBookL3 {
                         // Determine trade quantity
                         let trade_qty = remaining_qty.min(ask_entry.order.leaves_qty);
 
-                        // Create trade
-                        self.trade_counter += 1;
+                        // Create trade (deterministic id)
+                        let trade_id = self.next_trade_id();
                         let trade = Trade {
-                            trade_id: format!("TRADE_{}_{}", self.trade_counter, Uuid::new_v4()),
+                            trade_id,
                             order_id: incoming.order_id.clone(),
                             client_order_id: incoming.client_order_id.clone(),
                             contra_order_id: Some(ask_entry.order.order_id.clone()),
@@ -365,6 +503,22 @@ impl OrderBookL3 {
                             ask_entry.order.status = OrderStatus::Filled;
                             // Remove from orders map
                             self.orders.remove(&ask_entry.order.order_id);
+                            // Emit queue position telemetry for maker fill.
+                            if let Some((enq_ts, enq_pos)) = self.resting_info.remove(&ask_entry.order.order_id) {
+                                let exit_pos = ask_entry.queue_position;
+                                let wait_time_ns = incoming.timestamp_ns.saturating_sub(enq_ts);
+                                self.queue_events.push(QueuePositionEvent {
+                                    order_id: ask_entry.order.order_id.clone(),
+                                    client_order_id: ask_entry.order.client_order_id.clone(),
+                                    symbol: ask_entry.order.symbol.clone(),
+                                    side: ask_entry.order.side,
+                                    price: ask_entry.order.price,
+                                    enqueued_position: enq_pos,
+                                    exit_position: exit_pos,
+                                    wait_time_ns,
+                                    outcome: QueuePositionOutcome::Filled,
+                                });
+                            }
                             // Ask queue permanently shifted, refresh positions
                             self._update_queue_positions(Side::Sell, 0);
                         }
@@ -407,10 +561,10 @@ impl OrderBookL3 {
                         // Determine trade quantity
                         let trade_qty = remaining_qty.min(bid_entry.order.leaves_qty);
 
-                        // Create trade
-                        self.trade_counter += 1;
+                        // Create trade (deterministic id)
+                        let trade_id = self.next_trade_id();
                         let trade = Trade {
-                            trade_id: format!("TRADE_{}_{}", self.trade_counter, Uuid::new_v4()),
+                            trade_id,
                             order_id: incoming.order_id.clone(),
                             client_order_id: incoming.client_order_id.clone(),
                             contra_order_id: Some(bid_entry.order.order_id.clone()),
@@ -437,6 +591,22 @@ impl OrderBookL3 {
                         } else {
                             bid_entry.order.status = OrderStatus::Filled;
                             self.orders.remove(&bid_entry.order.order_id);
+                            // Emit queue position telemetry for maker fill.
+                            if let Some((enq_ts, enq_pos)) = self.resting_info.remove(&bid_entry.order.order_id) {
+                                let exit_pos = bid_entry.queue_position;
+                                let wait_time_ns = incoming.timestamp_ns.saturating_sub(enq_ts);
+                                self.queue_events.push(QueuePositionEvent {
+                                    order_id: bid_entry.order.order_id.clone(),
+                                    client_order_id: bid_entry.order.client_order_id.clone(),
+                                    symbol: bid_entry.order.symbol.clone(),
+                                    side: bid_entry.order.side,
+                                    price: bid_entry.order.price,
+                                    enqueued_position: enq_pos,
+                                    exit_position: exit_pos,
+                                    wait_time_ns,
+                                    outcome: QueuePositionOutcome::Filled,
+                                });
+                            }
                             // Bid queue permanently shifted, refresh positions
                             self._update_queue_positions(Side::Buy, 0);
                         }

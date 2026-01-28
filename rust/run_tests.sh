@@ -75,6 +75,16 @@ echo "=========================================="
 cargo test --test property_test
 
 echo ""
+echo "Running execution_micro tests..."
+echo "=========================================="
+cargo test --manifest-path execution_micro/Cargo.toml --tests -- --test-threads=1
+
+echo ""
+echo "Building execution_micro sidecar..."
+echo "=========================================="
+cargo build --manifest-path execution_micro/Cargo.toml --bin sidecar
+
+echo ""
 echo "=========================================="
 echo "All tests completed!"
 echo "=========================================="

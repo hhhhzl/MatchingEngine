@@ -8,7 +8,7 @@ use rust_decimal::Decimal;
 
 use crate::types::{Order, Trade};
 use crate::error::{Result, MatchingError};
-use crate::orderbook_l3::OrderBookL3;
+use crate::orderbook_l3::{OrderBookL3, VisibleOrderBook, L3OrderView};
 use crate::order_types::{PostOnlyOrder, HiddenOrder, StopOrder, StopLimitOrder};
 use crate::rules_engine::{MarketRulesEngine, Rule};
 
@@ -196,6 +196,29 @@ impl MatchingEngineL3 {
     /// Get orderbook
     pub fn get_orderbook(&self, symbol: &str) -> Option<&OrderBookL3> {
         self.orderbooks.get(symbol)
+    }
+
+    /// Get a visible L2-style book (aggregated levels) from the L3 book.
+    pub fn get_visible_orderbook(&self, symbol: &str, max_levels: usize) -> Option<VisibleOrderBook> {
+        Some(self.orderbooks.get(symbol)?.get_visible_orderbook(max_levels))
+    }
+
+    /// Get an L3 snapshot (individual orders).
+    pub fn get_l3_snapshot(&self, symbol: &str, max_orders_per_side: usize) -> Option<(Vec<L3OrderView>, Vec<L3OrderView>)> {
+        Some(self.orderbooks.get(symbol)?.get_l3_snapshot(max_orders_per_side))
+    }
+
+    /// Get last trade price for a symbol.
+    pub fn get_last_trade_price(&self, symbol: &str) -> Option<Decimal> {
+        self.orderbooks.get(symbol)?.get_last_trade_price()
+    }
+
+    /// Drain queue position telemetry events for a symbol.
+    pub fn drain_queue_position_events(&mut self, symbol: &str) -> Vec<crate::orderbook_l3::QueuePositionEvent> {
+        match self.orderbooks.get_mut(symbol) {
+            Some(ob) => ob.drain_queue_position_events(),
+            None => Vec::new(),
+        }
     }
 
     /// Update current price (for stop order checking)

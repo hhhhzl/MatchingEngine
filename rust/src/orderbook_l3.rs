@@ -16,6 +16,30 @@ use crate::order_types::{HiddenOrder, PostOnlyOrder};
 /// Visible order book representation: (bids, asks), each as `(price, qty)` levels.
 pub type VisibleOrderBook = (Vec<(Decimal, Decimal)>, Vec<(Decimal, Decimal)>);
 
+/// L3 order view for snapshots/diffs.
+///
+/// This is an *observation* type (what the simulator or market-data layer can export),
+/// not the internal `Order` state machine type.
+#[derive(Debug, Clone)]
+pub struct L3OrderView {
+    pub order_id: String,
+    pub client_order_id: String,
+    pub account_id: String,
+    pub symbol: String,
+    pub side: Side,
+    pub price: Decimal,
+    /// Remaining quantity on the book.
+    pub leaves_qty: Decimal,
+    /// Visible quantity (for hidden orders, `min(leaves_qty, display_qty)`; for fully hidden, 0).
+    pub visible_qty: Decimal,
+    /// Queue position (0 = front).
+    pub queue_position: usize,
+    pub is_hidden: bool,
+    pub display_qty: Option<Decimal>,
+    /// Original order timestamp in ns.
+    pub timestamp_ns: i64,
+}
+
 /// Final outcome for a resting order's queue journey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueuePositionOutcome {
@@ -300,6 +324,71 @@ impl OrderBookL3 {
         let asks: Vec<_> = ask_levels.into_iter().take(max_levels).collect();
 
         (bids, asks)
+    }
+
+    /// Get an L3 snapshot (individual orders) for both sides.
+    ///
+    /// `max_orders_per_side` bounds output size to keep export costs predictable.
+    /// For hidden orders, `visible_qty` reflects what would be visible on the tape.
+    pub fn get_l3_snapshot(&self, max_orders_per_side: usize) -> (Vec<L3OrderView>, Vec<L3OrderView>) {
+        let mut bids_out = Vec::new();
+        for entry in self.bids.iter().take(max_orders_per_side) {
+            let visible_qty = if entry.is_hidden && entry.display_qty.is_none() {
+                Decimal::ZERO
+            } else if entry.is_hidden {
+                let display = entry.display_qty.unwrap_or(Decimal::ZERO);
+                entry.order.leaves_qty.min(display)
+            } else {
+                entry.order.leaves_qty
+            };
+            bids_out.push(L3OrderView {
+                order_id: entry.order.order_id.clone(),
+                client_order_id: entry.order.client_order_id.clone(),
+                account_id: entry.order.account_id.clone(),
+                symbol: entry.order.symbol.clone(),
+                side: entry.order.side,
+                price: entry.order.price,
+                leaves_qty: entry.order.leaves_qty,
+                visible_qty,
+                queue_position: entry.queue_position,
+                is_hidden: entry.is_hidden,
+                display_qty: entry.display_qty,
+                timestamp_ns: entry.order.timestamp_ns,
+            });
+        }
+
+        let mut asks_out = Vec::new();
+        for entry in self.asks.iter().take(max_orders_per_side) {
+            let visible_qty = if entry.is_hidden && entry.display_qty.is_none() {
+                Decimal::ZERO
+            } else if entry.is_hidden {
+                let display = entry.display_qty.unwrap_or(Decimal::ZERO);
+                entry.order.leaves_qty.min(display)
+            } else {
+                entry.order.leaves_qty
+            };
+            asks_out.push(L3OrderView {
+                order_id: entry.order.order_id.clone(),
+                client_order_id: entry.order.client_order_id.clone(),
+                account_id: entry.order.account_id.clone(),
+                symbol: entry.order.symbol.clone(),
+                side: entry.order.side,
+                price: entry.order.price,
+                leaves_qty: entry.order.leaves_qty,
+                visible_qty,
+                queue_position: entry.queue_position,
+                is_hidden: entry.is_hidden,
+                display_qty: entry.display_qty,
+                timestamp_ns: entry.order.timestamp_ns,
+            });
+        }
+
+        (bids_out, asks_out)
+    }
+
+    /// Get last trade price.
+    pub fn get_last_trade_price(&self) -> Option<Decimal> {
+        self.last_trade_price
     }
 
     /// Cancel an order

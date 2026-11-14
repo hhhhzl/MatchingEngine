@@ -16,6 +16,54 @@ use crate::order_types::{HiddenOrder, PostOnlyOrder};
 /// Visible order book representation: (bids, asks), each as `(price, qty)` levels.
 pub type VisibleOrderBook = (Vec<(Decimal, Decimal)>, Vec<(Decimal, Decimal)>);
 
+/// L3 order view for snapshots/diffs.
+///
+/// This is an *observation* type (what the simulator or market-data layer can export),
+/// not the internal `Order` state machine type.
+#[derive(Debug, Clone)]
+pub struct L3OrderView {
+    pub order_id: String,
+    pub client_order_id: String,
+    pub account_id: String,
+    pub symbol: String,
+    pub side: Side,
+    pub price: Decimal,
+    /// Remaining quantity on the book.
+    pub leaves_qty: Decimal,
+    /// Visible quantity (for hidden orders, `min(leaves_qty, display_qty)`; for fully hidden, 0).
+    pub visible_qty: Decimal,
+    /// Queue position (0 = front).
+    pub queue_position: usize,
+    pub is_hidden: bool,
+    pub display_qty: Option<Decimal>,
+    /// Original order timestamp in ns.
+    pub timestamp_ns: i64,
+}
+
+impl L3OrderView {
+    fn from_entry(entry: &OrderEntry) -> Self {
+        let visible_qty = match (entry.is_hidden, entry.display_qty) {
+            (true, None) => Decimal::ZERO,
+            (true, Some(display)) => entry.order.leaves_qty.min(display),
+            (false, _) => entry.order.leaves_qty,
+        };
+        Self {
+            order_id: entry.order.order_id.clone(),
+            client_order_id: entry.order.client_order_id.clone(),
+            account_id: entry.order.account_id.clone(),
+            symbol: entry.order.symbol.clone(),
+            side: entry.order.side,
+            price: entry.order.price,
+            leaves_qty: entry.order.leaves_qty,
+            visible_qty,
+            queue_position: entry.queue_position,
+            is_hidden: entry.is_hidden,
+            display_qty: entry.display_qty,
+            timestamp_ns: entry.order.timestamp_ns,
+        }
+    }
+}
+
 /// Final outcome for a resting order's queue journey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueuePositionOutcome {
@@ -302,6 +350,22 @@ impl OrderBookL3 {
         (bids, asks)
     }
 
+    /// Get an L3 snapshot (individual orders) for both sides.
+    ///
+    /// `max_orders_per_side` bounds output size to keep export costs predictable.
+    /// For hidden orders, `visible_qty` reflects what would be visible on the tape.
+    pub fn get_l3_snapshot(&self, max_orders_per_side: usize) -> (Vec<L3OrderView>, Vec<L3OrderView>) {
+        let view = |side: &VecDeque<OrderEntry>| -> Vec<L3OrderView> {
+            side.iter().take(max_orders_per_side).map(L3OrderView::from_entry).collect()
+        };
+        (view(&self.bids), view(&self.asks))
+    }
+
+    /// Get last trade price.
+    pub fn get_last_trade_price(&self) -> Option<Decimal> {
+        self.last_trade_price
+    }
+
     /// Cancel an order
     pub fn cancel_order(&mut self, order_id: &str) -> Result<Order> {
         self.remove_resting_order(order_id, QueuePositionOutcome::Canceled)
@@ -434,6 +498,14 @@ impl OrderBookL3 {
         // Generate order_id if not set
         if incoming.order_id.is_empty() {
             incoming.order_id = self.next_order_id();
+        }
+
+        // FOK is all-or-nothing: check depth before touching the book, so a
+        // kill leaves resting orders untouched.
+        if incoming.time_in_force == TimeInForce::FOK
+            && self.fillable_qty(&incoming, remaining_qty) < remaining_qty
+        {
+            return Vec::new();
         }
 
         match incoming.side {
@@ -638,24 +710,24 @@ impl OrderBookL3 {
                 }
             }
             TimeInForce::FOK => {
-                // Fill or Kill: if not fully filled, cancel and remove all trades
-                if remaining_qty > Decimal::ZERO || trades.is_empty() {
-                    incoming.status = OrderStatus::Canceled;
-                    trades.clear(); // FOK requires complete fill
-                    false
-                } else {
-                    incoming.status = OrderStatus::Filled;
-                    // Update status if order is in map (from partial fills)
-                    if let Some(incoming_entry) = self.orders.get_mut(&incoming.order_id) {
-                        incoming_entry.order.status = OrderStatus::Filled;
-                    }
-                    false // FOK orders are never added to book (they're either filled or canceled)
+                // The depth pre-check above guarantees a complete fill here.
+                debug_assert!(remaining_qty == Decimal::ZERO);
+                incoming.status = OrderStatus::Filled;
+                if let Some(incoming_entry) = self.orders.get_mut(&incoming.order_id) {
+                    incoming_entry.order.status = OrderStatus::Filled;
                 }
+                false // FOK orders never rest
             }
             _ => {
-                // GTC, Day: add remaining quantity to book if not fully filled
+                // GTC, Day: rest the remainder of a limit order. A market
+                // order's remainder is canceled; it has no price to rest at.
                 if remaining_qty > Decimal::ZERO {
-                    true
+                    if incoming.order_type == OrderType::Market {
+                        incoming.status = OrderStatus::Canceled;
+                        false
+                    } else {
+                        true
+                    }
                 } else {
                     // Update incoming order status
                     if let Some(incoming_entry) = self.orders.get_mut(&incoming.order_id) {
@@ -690,6 +762,34 @@ impl OrderBookL3 {
         }
 
         trades
+    }
+
+    /// Quantity on the opposite side that `incoming` could trade against,
+    /// counting only until `needed` is reached.
+    fn fillable_qty(&self, incoming: &Order, needed: Decimal) -> Decimal {
+        let opposite = match incoming.side {
+            Side::Buy => &self.asks,
+            Side::Sell => &self.bids,
+        };
+        let mut total = Decimal::ZERO;
+        for entry in opposite {
+            let crosses = match incoming.order_type {
+                OrderType::Market => true,
+                OrderType::Limit => match incoming.side {
+                    Side::Buy => incoming.price >= entry.order.price,
+                    Side::Sell => incoming.price <= entry.order.price,
+                },
+                _ => false,
+            };
+            if !crosses {
+                break;
+            }
+            total += entry.order.leaves_qty;
+            if total >= needed {
+                break;
+            }
+        }
+        total
     }
 
     /// Find insertion position based on price-time priority

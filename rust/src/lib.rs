@@ -31,7 +31,7 @@ pub use orderbook::OrderBook;
 pub use engine_l2::MatchingEngine;
 
 // L3 exports
-pub use orderbook_l3::OrderBookL3;
+pub use orderbook_l3::{OrderBookL3, L3OrderView};
 pub use order_types::{PostOnlyOrder, HiddenOrder, StopOrder, StopLimitOrder};
 pub use rules_engine::{MarketRulesEngine, Rule, RuleAction, RuleType};
 pub use engine_l3::MatchingEngineL3;

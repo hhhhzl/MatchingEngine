@@ -634,6 +634,23 @@ func (e *Engine) ingestExecReport(rec wire.EventLogRecord) {
 	e.applyExecReport(er)
 }
 
+// applyFill adds one fill to a child order and its parent intent.
+//
+// ExecutionReport.filled_qty is the quantity of THIS fill (incremental, FIX
+// LastQty), not the cumulative filled quantity; see proto/marginforest/v1/events.proto.
+// The fill is capped at the child's remaining quantity so a duplicated report
+// cannot push the child past its order size.
+func applyFill(it *intentRuntime, ch *childOrder, lastQty float64) {
+	if lastQty <= 0 {
+		return
+	}
+	if ch.Qty > 0 {
+		lastQty = math.Min(lastQty, math.Max(0, ch.Qty-ch.FilledQty))
+	}
+	ch.FilledQty += lastQty
+	it.FilledQty += lastQty
+}
+
 func (e *Engine) applyExecReport(er map[string]any) {
 	coid, _ := er["client_order_id"].(string)
 	if coid == "" {
@@ -680,18 +697,10 @@ func (e *Engine) applyExecReport(er map[string]any) {
 			}
 		case "EXEC_REPORT_TYPE_PARTIAL":
 			ch.Status = "partial"
-			if filledQty > ch.FilledQty {
-				delta := filledQty - ch.FilledQty
-				ch.FilledQty = filledQty
-				it.FilledQty += delta
-			}
+			applyFill(it, ch, filledQty)
 		case "EXEC_REPORT_TYPE_FILL":
 			ch.Status = "filled"
-			if filledQty > ch.FilledQty {
-				delta := filledQty - ch.FilledQty
-				ch.FilledQty = filledQty
-				it.FilledQty += delta
-			}
+			applyFill(it, ch, filledQty)
 			// Real-time slippage / IS estimate vs arrival mid (best-effort).
 			if it.ArrivalMid > 0 {
 				fp := parseDecimal(er["fill_price"])

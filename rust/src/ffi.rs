@@ -121,9 +121,11 @@ fn market_status_from_u8(v: u8) -> Result<MarketStatus, c_int> {
 fn encode_msgpack<T: serde::Serialize>(value: &T) -> Result<MFBuffer, c_int> {
     let mut buf = Vec::<u8>::new();
     rmp_serde::encode::write(&mut buf, value).map_err(|_| MF_ERR_INTERNAL)?;
-    let len = buf.len();
-    let ptr = buf.as_mut_ptr();
-    std::mem::forget(buf);
+    // Shrink to an exact-size allocation so `mf_buffer_free` can rebuild it
+    // from (ptr, len) alone. A Vec's capacity is usually larger than its len.
+    let boxed: Box<[u8]> = buf.into_boxed_slice();
+    let len = boxed.len();
+    let ptr = Box::into_raw(boxed) as *mut u8;
     Ok(MFBuffer { ptr, len })
 }
 
@@ -141,8 +143,10 @@ pub extern "C" fn mf_buffer_free(buf: MFBuffer) {
     if buf.ptr.is_null() || buf.len == 0 {
         return;
     }
+    // SAFETY: `ptr`/`len` came from `Box::<[u8]>::into_raw` in `encode_msgpack`
+    // and the caller frees each buffer once.
     unsafe {
-        let _ = Vec::from_raw_parts(buf.ptr, buf.len, buf.len);
+        drop(Box::from_raw(ptr::slice_from_raw_parts_mut(buf.ptr, buf.len)));
     }
 }
 
@@ -445,3 +449,24 @@ pub extern "C" fn mf_engine_book_snapshot(
     MF_OK
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Payloads of many sizes, so Vec growth leaves capacity != len before the
+    // shrink. Run under `cargo miri test` to check the alloc/free pairing.
+    #[test]
+    fn encoded_buffers_free_cleanly() {
+        for n in [0usize, 1, 7, 33, 100, 1000, 4097] {
+            let payload: Vec<u32> = (0..n as u32).collect();
+            let buf = encode_msgpack(&payload).expect("encode");
+            assert!(!buf.ptr.is_null());
+            let decoded: Vec<u32> =
+                rmp_serde::from_slice(unsafe { std::slice::from_raw_parts(buf.ptr, buf.len) })
+                    .expect("decode");
+            assert_eq!(decoded, payload);
+            mf_buffer_free(buf);
+        }
+    }
+}
